@@ -1,7 +1,8 @@
 # SuperLandfix
 
-Unified Landfix (NoTimeLoss/Haze) plugin with a customisable HUD, cookies,
-per-jump toggles, and landfix marks recorded alongside shavit replays.
+Unified Landfix (NoTimeLoss/Haze) plugin with a customisable HUD, cookies and
+per-jump toggles. Landfix is tracked per run, so while spectating you see what
+the player or replay you are watching is using rather than your own setting.
 
 ## Commands
 /lf - Toggle Landfix (On/Off)    
@@ -22,10 +23,16 @@ Allows you to set certain jumps to toggle landfix, it uses the mode your landfix
 /lft <# jump> - Enables landfix for the desired jump.      
 /lft <# jump - #jump> - Enables landfix for the selected jumps.    
 
-## Replay marks
-Every run writes a `.replay.landfix` file beside the replay recording where
-landfix moved the player and whether it was on or off, so a spectator can see
-what a run was set to rather than their own setting.
+## Landfix tracking
+Landfix is tracked per run rather than per player, so the HUD follows whoever you
+are watching instead of your own setting. Spectate a player and it shows the
+landfix they are using; spectate a replay and it shows what that run was set to,
+including when it was switched on or off partway through. `/lfc` prints the same
+for the replay you are spectating.
+
+This works because every run writes a `.replay.landfix` file beside the replay
+recording, holding where landfix moved the player and its on/off history, so a
+run can be read back long after it was set.
 
 ## Credit
 This is a continuation of [tadehack/landfix_wHudAndCookies](https://github.com/tadehack/landfix_wHudAndCookies),
