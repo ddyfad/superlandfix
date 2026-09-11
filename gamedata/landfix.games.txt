@@ -1,0 +1,49 @@
+"Games"
+{
+	"#default"
+	{
+		"Keys"
+		{
+			"IGameMovement"		"GameMovement001"
+
+			"IServerGameEnts"	"ServerGameEnts001"
+		}
+
+		"Signatures"
+		{
+			"CreateInterface"
+			{
+				"library"		"server"
+				"windows"		"@CreateInterface"
+				"linux"			"@CreateInterface"
+			}
+			
+			"OnAirAccelerate"
+			{
+				"library"		"server"
+				"linux"			"@_ZN13CGameMovement13AirAccelerateER6Vectorff"
+			}
+			
+			"OnAccelerate"
+			{
+				"library"		"server"
+				"linux"			"@_ZN13CGameMovement10AccelerateER6Vectorff"
+			}
+		}
+
+		"Offsets"
+		{
+			"ProcessMovement"
+			{
+				"windows"		"1"
+				"linux"			"2"
+			}
+			
+			"CheckJumpButton"
+			{
+				"windows"		"29"
+				"linux"			"30"
+			}
+		}
+	}
+}
