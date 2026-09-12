@@ -15,7 +15,7 @@ public Plugin myinfo =
 	name = "SuperLandfix",
 	author = "olivia, Haze, nimmy, shinoum, lukah, nora, zas, daf",
 	description = "Landfix (NoTimeLoss/Haze) with HUD, cookies, per jump toggles, tracked per run for spectators.",
-	version = "2.0.0",
+	version = "1.0.0",
 	url = "https://github.com/ddyfad/superlandfix"
 }
 
