@@ -30,6 +30,8 @@ landfix they are using; spectate a replay and it shows what that run was set to,
 including when it was switched on or off partway through. `/lfc` prints the same
 for the replay you are spectating.
 
+*Note that only replays set after swapping to this plugin will have landfix data
+
 This works because every run writes a `.replay.landfix` file beside the replay
 recording, holding where landfix moved the player and its on/off history, so a
 run can be read back long after it was set.
@@ -46,4 +48,4 @@ https://github.com/Haze1337/Landfix (Haze)
 Landfix Type idea and base code from:    
 https://github.com/enimmy/not-broken-landfix    
 
-Special thanks to lukah for most of the hud color system and menus and nora for implementing additional features and fixing some handle errors.   
+Special thanks to lukah for most of the hud color system and menus, nora for implementing additional features and fixing some handle errors and tommy/woolen for the landfixtoggle idea!  
