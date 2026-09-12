@@ -1055,11 +1055,12 @@ public int LandFixCommandsMenu_Callback(Menu menu, MenuAction action, int client
 
 void ShowLandFixAboutMenu(int client)
 {
-	char sVersion[8];
+	char sVersion[8], sName[64];
 	GetPluginInfo(GetMyHandle(), PlInfo_Version, sVersion, sizeof(sVersion));
+	GetPluginInfo(GetMyHandle(), PlInfo_Name, sName, sizeof(sName));
 
 	Menu menu = CreateMenu(LandFixAboutMenu_Callback);
-	SetMenuTitle(menu, "Landfix with HUD and Cookies v%s\n \nThe Landfix plugin fixes a Source engine bug that causes jump height to vary by 2 units every jump\n \n \nLandfix Types:\n \nNoTimeLoss - Balances jump height by increasing the minimum height by 0.5 units while decreasing the maximum height by 0.5 units\nYou won't have any time loss during your run\n \nHaze - Makes every jump reach the maximum height, making 64-unit crouch jumps the easiest to perform\nYou will have a slight time loss by the end of your run\n \n", sVersion);
+	SetMenuTitle(menu, "%s v%s\n \nThe Landfix plugin fixes a Source engine bug that causes jump height to vary by 2 units every jump\n \n \nLandfix Types:\n \nNoTimeLoss - Balances jump height by increasing the minimum height by 0.5 units while decreasing the maximum height by 0.5 units\nYou won't have any time loss during your run\n \nHaze - Makes every jump reach the maximum height, making 64-unit crouch jumps the easiest to perform\nYou will have a slight time loss by the end of your run\n \n", sName, sVersion);
 	AddMenuItem(menu, "back", "Back");
 	DisplayMenu(menu, client, MENU_TIME_FOREVER);
 }
