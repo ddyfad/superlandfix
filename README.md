@@ -4,6 +4,15 @@ Unified Landfix (NoTimeLoss/Haze) plugin with a customisable HUD, cookies and
 per-jump toggles. Landfix is tracked per run, so while spectating you see what
 the player or replay you are watching is using rather than your own setting.
 
+## Requirements
+Requires shavit (`shavit/core`).
+
+shavit's `replay-recorder` and `replay-playback` are optional. Without them the
+plugin still loads and landfix, the HUD, cookies and jump toggles all work as
+normal - only the replay half is unavailable: no `.replay.landfix` files are
+written, and `/lfc` reports that replays are not available. Spectating a live
+player still shows their landfix, since that never needed the replay plugins.
+
 ## Commands
 /lf - Toggle Landfix (On/Off)    
 /lfs - Toggle Landfix Mode (NoTimeLoss/Haze)    
@@ -15,7 +24,7 @@ the player or replay you are watching is using rather than your own setting.
 /lfi - Open Landfix Commands Menu   
 /lfa - Open Landfix About Menu    
 
-/lfc - Shows what landfix the replay you are spectating was run with    
+/lfc - Shows what landfix the replay you are spectating was run with (needs shavit replay)    
 
 ## Landfix Toggle
 Allows you to set certain jumps to toggle landfix, it uses the mode your landfix is currently set to.    
@@ -30,7 +39,7 @@ landfix they are using; spectate a replay and it shows what that run was set to,
 including when it was switched on or off partway through. `/lfc` prints the same
 for the replay you are spectating.
 
-*Note that only replays set after swapping to this plugin will have landfix data
+*Note that only replays set after swapping to this plugin will have landfix data.*
 
 This works because every run writes a `.replay.landfix` file beside the replay
 recording, holding where landfix moved the player and its on/off history, so a
