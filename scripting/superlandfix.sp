@@ -151,6 +151,10 @@ bool gB_FinishedEnabled[MAXPLAYERS+1];
 bool gB_FinishedMode[MAXPLAYERS+1];
 bool gB_HaveFinished[MAXPLAYERS+1];
 
+// Whether shavit-replay-playback is loaded. Everything that reads a replay is
+// skipped when it is not.
+bool g_bReplayPlayback;
+
 // The same, for the replay a bot is playing, so a spectator reads the run's landfix
 // instead of their own. Indexed by bot entity, which is a fake client.
 ArrayList gA_BotStates[MAXPLAYERS+1];
@@ -160,6 +164,38 @@ bool gB_BotMarksEnabled[MAXPLAYERS+1];
 int gI_BotMarksMode[MAXPLAYERS+1];
 
 // Plugin Start ------------------------------------------------------
+
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{
+	// Replay playback is optional. Without it the marks, the spectator HUD and
+	// /lfc are unavailable, and everything else works as normal.
+	MarkNativeAsOptional("Shavit_IsReplayEntity");
+	MarkNativeAsOptional("Shavit_GetReplayBotCache");
+	MarkNativeAsOptional("Shavit_GetReplayBotStyle");
+	MarkNativeAsOptional("Shavit_GetReplayBotTrack");
+	MarkNativeAsOptional("Shavit_GetReplayBotCurrentFrame");
+	MarkNativeAsOptional("Shavit_GetReplayCachePreFrames");
+	MarkNativeAsOptional("Shavit_GetReplayFolderPath");
+
+	return APLRes_Success;
+}
+
+public void OnAllPluginsLoaded()
+{
+	g_bReplayPlayback = LibraryExists("shavit-replay-playback");
+}
+
+public void OnLibraryAdded(const char[] name)
+{
+	if(StrEqual(name, "shavit-replay-playback"))
+		g_bReplayPlayback = true;
+}
+
+public void OnLibraryRemoved(const char[] name)
+{
+	if(StrEqual(name, "shavit-replay-playback"))
+		g_bReplayPlayback = false;
+}
 
 public void OnPluginStart()
 {
@@ -1103,7 +1139,7 @@ public Action Timer_ShowHudText(Handle timer, any client)
 	// Watching a replay: what that run had set at the point on screen. Watching a
 	// player: theirs, since that is whose jumps are being looked at. Otherwise their
 	// own. All three draw the same line, or none at all.
-	if(target > 0 && Shavit_IsReplayEntity(target))
+	if(g_bReplayPlayback && target > 0 && Shavit_IsReplayEntity(target))
 		draw = gB_BotMarksKnown[target] && FormatBotLandfixHud(target, hudText, sizeof(hudText));
 	else if(target > 0 && !IsFakeClient(target))
 		draw = FormatClientLandfixHud(target, hudText, sizeof(hudText));
@@ -1753,6 +1789,12 @@ public Action Command_LandfixCheck(int client, int args)
 
 	int target = SpectatedTarget(client);
 
+	if(!g_bReplayPlayback)
+	{
+		Shavit_PrintToChat(client, "Replays are not available on this server.");
+		return Plugin_Handled;
+	}
+
 	if(target < 1 || !Shavit_IsReplayEntity(target))
 	{
 		Shavit_PrintToChat(client, "Spectate a replay to check what it was run with.");
@@ -1813,7 +1855,7 @@ public Action Timer_LateLoadReplayBots(Handle timer)
 {
 	for(int client = 1; client <= MaxClients; client++)
 	{
-		if(IsClientInGame(client) && IsFakeClient(client) && Shavit_IsReplayEntity(client))
+		if(g_bReplayPlayback && IsClientInGame(client) && IsFakeClient(client) && Shavit_IsReplayEntity(client))
 			LoadBotLandfixMarks(client);
 	}
 
@@ -1825,6 +1867,9 @@ void LoadBotLandfixMarks(int bot)
 	ClearBotLandfixMarks(bot);
 
 	if(bot < 1 || bot > MaxClients)
+		return;
+
+	if(!g_bReplayPlayback)
 		return;
 
 	gB_BotMarksKnown[bot] = true;
@@ -1977,6 +2022,9 @@ int SpectatedTarget(int client)
 // started, which is what the marks are measured from.
 float BotReplayRunTime(int bot)
 {
+	if(!g_bReplayPlayback)
+		return 0.0;
+
 	int frame = Shavit_GetReplayBotCurrentFrame(bot) - Shavit_GetReplayCachePreFrames(bot);
 
 	return frame <= 0 ? 0.0 : float(frame) * GetTickInterval();
