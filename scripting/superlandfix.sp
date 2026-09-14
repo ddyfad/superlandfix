@@ -117,7 +117,12 @@ int gI_LandfixRangeEndJump[MAXPLAYERS+1];
 int gI_LandfixOneShotEndJump[MAXPLAYERS+1];
 int gI_LandfixLastToggleTick[MAXPLAYERS+1];
 
-Cookie gC_LandfixJumpsCookie;
+// Per-map jump toggles, kept in SQL instead of a cookie so they can be browsed for other players too.
+Database gH_LandfixDB;
+ConVar gCV_LandfixDatabase;
+bool gB_LandfixDBReady;
+int gI_LandfixLoadGen[MAXPLAYERS + 1];
+char gS_LandfixMap[PLATFORM_MAX_PATH];
 
 bool gB_WasOnGround[MAXPLAYERS + 1];
 int gI_LastTakeoffTick[MAXPLAYERS + 1];
@@ -277,6 +282,7 @@ public void OnPluginStart()
 	RegConsoleCmd("sm_lfrange", Command_LandfixJumps, "Landfix Toggler");
 
 	gCV_ToggleHints = CreateConVar("landfix_toggle_hints", "1", "Show a hint on screen when a jump toggle fires (1/0)");
+	gCV_LandfixDatabase = CreateConVar("sm_landfix_database", "storage-local", "Database entry in databases.cfg used for per-map Landfix jump toggle storage.");
 
 
 	HookEvent("player_jump", Event_PlayerJump);
@@ -291,11 +297,9 @@ gC_LegacyUseHudCookie = new Cookie("landfix_hud_toggle", "Landfix HUD toggle sta
 gC_LegacyHudPositionCookie = new Cookie("landfix_hud_position", "Landfix HUD position state", CookieAccess_Protected);
 gC_LegacyHudColorCookie = new Cookie("landfix_hud_color", "Landfix HUD Color", CookieAccess_Protected);
 
-gC_LandfixJumpsCookie = new Cookie(
-	"landfix_jumps_landfix",
-	"Landfix jump toggle list",
-	CookieAccess_Protected
-);
+GetCurrentMap(gS_LandfixMap, sizeof(gS_LandfixMap));
+ConnectLandfixDatabase();
+
 	// NoTimeLoss Stuff -----
 
 	GameData gd = LoadGameConfigFile("landfix.games");
@@ -365,6 +369,7 @@ public void OnMapStart()
 {
 	GetShavitChatColors();
 	gI_HudMapGeneration++;
+	GetCurrentMap(gS_LandfixMap, sizeof(gS_LandfixMap));
 
 	// OnMapStart fires while clients may still be loading.  Do not create a HUD
 	// timer here: it can fire before the new client HUD exists and then never be
@@ -384,6 +389,10 @@ public void OnMapStart()
 			}
 
 			StopHudTimer(client);
+
+			// Toggles are per-map, so reload (or clear) them for the map we've just landed on.
+			if(AreClientCookiesCached(client))
+				RequestLandfixToggleLoad(client);
 		}
 	}
 }
@@ -506,23 +515,9 @@ public void OnClientCookiesCached(int client)
 	if(dirty != 0 || migrateLegacySettings || recoveredHandoffSettings)
 		SaveLandfixSettings(client, dirty);
 
-// Load Landfix jump toggle cookie
-char toggleBuffer[512];
-char parts[2][256];
-
-gB_LandfixJumpsEnabled[client] = true;
-ClearLandfixTargets(client);
-
-gC_LandfixJumpsCookie.Get(client, toggleBuffer, sizeof(toggleBuffer));
-
-	if(toggleBuffer[0] != '\0')
-	{
-		if(ExplodeString(toggleBuffer, ";", parts, sizeof(parts), sizeof(parts[])) == 2)
-		{
-			gB_LandfixJumpsEnabled[client] = (StringToInt(parts[0]) == 1);
-			AddLandfixTargetsFromString(client, parts[1]);
-		}
-	}
+// Load this map's Landfix jump toggles (per-map, from the database).
+RememberLandfixProfile(client);
+RequestLandfixToggleLoad(client);
 }
 
 bool LoadLandfixSettings(int client)
@@ -1493,7 +1488,7 @@ public Action Command_LandfixJumps(int client, int args)
 		return Plugin_Handled;
 	}
 
-	SaveLandfixJumpCookie(client);
+	SaveLandfixToggles(client);
 
 	char list[256];
 	BuildLandfixList(client, list, sizeof(list));
@@ -1523,6 +1518,7 @@ void ShowToggleMenu(int client)
 
 	AddMenuItem(menu, "landfix", item);
 	AddMenuItem(menu, "clear", "Clear all Landfix toggles");
+	AddMenuItem(menu, "browse", "Browse other players' toggles\n \n");
 	AddMenuItem(menu, "status", "Show status");
 
 	DisplayMenu(menu, client, MENU_TIME_FOREVER);
@@ -1571,19 +1567,23 @@ public int LandfixToggleMenu_Callback(Menu menu, MenuAction action, int client, 
 			}
 		}
 
-		SaveLandfixJumpCookie(client);
+		SaveLandfixToggles(client);
 		ShowToggleMenu(client);
 	}
 	else if(StrEqual(info, "clear"))
 	{
 		ClearLandfixTargets(client);
-		SaveLandfixJumpCookie(client);
+		SaveLandfixToggles(client);
 
 		ResetLandfixJumps(client);
 
 		Shavit_PrintToChat(client, "Cleared all Landfix jump toggles.");
 
 		ShowToggleMenu(client);
+	}
+	else if(StrEqual(info, "browse"))
+	{
+		ShowLandfixToggleBrowseMenu(client);
 	}
 	else if(StrEqual(info, "status"))
 	{
@@ -2547,23 +2547,379 @@ void PrintLandfixJumpStatus(int client)
 	);
 }
 
-void SaveLandfixJumpCookie(int client)
+// Landfix Toggle Database ----------------------------------------------------
+
+void ConnectLandfixDatabase()
 {
-	if(!AreClientCookiesCached(client))
+	char databaseName[64];
+	gCV_LandfixDatabase.GetString(databaseName, sizeof(databaseName));
+	Database.Connect(SQL_OnLandfixDatabaseConnected, databaseName);
+}
+
+public void SQL_OnLandfixDatabaseConnected(Database db, const char[] error, any data)
+{
+	if(db == null)
+	{
+		LogError("superlandfix database connection failed: %s", error);
+		return;
+	}
+
+	gH_LandfixDB = db;
+
+	char driver[32];
+	db.Driver.GetIdentifier(driver, sizeof(driver));
+
+	char query[512];
+	if(StrEqual(driver, "sqlite", false))
+	{
+		FormatEx(query, sizeof(query), "CREATE TABLE IF NOT EXISTS landfix_toggles (steamid TEXT NOT NULL, map TEXT NOT NULL, enabled INTEGER NOT NULL, jumps TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (steamid, map))");
+	}
+	else
+	{
+		FormatEx(query, sizeof(query), "CREATE TABLE IF NOT EXISTS landfix_toggles (steamid VARCHAR(64) NOT NULL, map VARCHAR(255) NOT NULL, enabled INT NOT NULL, jumps VARCHAR(300) NOT NULL, updated_at INT NOT NULL, PRIMARY KEY (steamid, map))");
+	}
+
+	db.Query(SQL_LandfixTogglesTableCallback, query);
+}
+
+public void SQL_LandfixTogglesTableCallback(Database db, DBResultSet results, const char[] error, any data)
+{
+	if(results == null)
+	{
+		LogError("superlandfix landfix_toggles table creation failed: %s", error);
+		return;
+	}
+
+	CreateLandfixPlayerTable();
+}
+
+void CreateLandfixPlayerTable()
+{
+	char driver[32];
+	gH_LandfixDB.Driver.GetIdentifier(driver, sizeof(driver));
+
+	char query[512];
+	if(StrEqual(driver, "sqlite", false))
+	{
+		FormatEx(query, sizeof(query), "CREATE TABLE IF NOT EXISTS landfix_players (steamid TEXT PRIMARY KEY, last_name TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+	}
+	else
+	{
+		FormatEx(query, sizeof(query), "CREATE TABLE IF NOT EXISTS landfix_players (steamid VARCHAR(64) NOT NULL PRIMARY KEY, last_name VARCHAR(128) NOT NULL, updated_at INT NOT NULL)");
+	}
+
+	gH_LandfixDB.Query(SQL_LandfixPlayerTableCallback, query);
+}
+
+public void SQL_LandfixPlayerTableCallback(Database db, DBResultSet results, const char[] error, any data)
+{
+	if(results == null)
+	{
+		LogError("superlandfix landfix_players table creation failed: %s", error);
+		return;
+	}
+
+	gB_LandfixDBReady = true;
+
+	// Tables now exist, so pull in toggles for anyone already in game.
+	for(int client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client) && !IsFakeClient(client) && AreClientCookiesCached(client))
+		{
+			RememberLandfixProfile(client);
+			RequestLandfixToggleLoad(client);
+		}
+	}
+}
+
+public void SQL_LandfixGenericCallback(Database db, DBResultSet results, const char[] error, any data)
+{
+	if(results == null)
+		LogError("superlandfix database query failed: %s", error);
+}
+
+// Shares the same validation as the settings handoff file.
+bool GetLandfixSteamId(int client, char[] steamId, int maxlen)
+{
+	return GetLandfixHandoffAuthId(client, steamId, maxlen);
+}
+
+void RememberLandfixProfile(int client)
+{
+	if(!gB_LandfixDBReady || gH_LandfixDB == null || client < 1 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+		return;
+
+	char steamId[MAX_AUTHID_LENGTH];
+	if(!GetLandfixSteamId(client, steamId, sizeof(steamId)))
+		return;
+
+	char name[MAX_NAME_LENGTH], escapedSteamId[MAX_AUTHID_LENGTH * 2 + 1], escapedName[MAX_NAME_LENGTH * 2 + 1];
+	GetClientName(client, name, sizeof(name));
+	gH_LandfixDB.Escape(steamId, escapedSteamId, sizeof(escapedSteamId));
+	gH_LandfixDB.Escape(name, escapedName, sizeof(escapedName));
+
+	char query[512];
+	FormatEx(query, sizeof(query), "REPLACE INTO landfix_players (steamid, last_name, updated_at) VALUES ('%s', '%s', %d)", escapedSteamId, escapedName, GetTime());
+	gH_LandfixDB.Query(SQL_LandfixGenericCallback, query);
+}
+
+// Called on connect and again on every map change, so toggles always match the current map.
+void RequestLandfixToggleLoad(int client)
+{
+	if(client < 1 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+		return;
+
+	// Defaults while the async load is outstanding, or if there's no saved row for this map.
+	ClearLandfixTargets(client);
+	gB_LandfixJumpsEnabled[client] = true;
+
+	if(!gB_LandfixDBReady || gH_LandfixDB == null)
+		return;
+
+	char steamId[MAX_AUTHID_LENGTH];
+	if(!GetLandfixSteamId(client, steamId, sizeof(steamId)))
+		return;
+
+	char escapedSteamId[MAX_AUTHID_LENGTH * 2 + 1], escapedMap[PLATFORM_MAX_PATH * 2 + 1];
+	gH_LandfixDB.Escape(steamId, escapedSteamId, sizeof(escapedSteamId));
+	gH_LandfixDB.Escape(gS_LandfixMap, escapedMap, sizeof(escapedMap));
+
+	char query[768];
+	FormatEx(query, sizeof(query), "SELECT enabled, jumps FROM landfix_toggles WHERE steamid = '%s' AND map = '%s'", escapedSteamId, escapedMap);
+
+	gI_LandfixLoadGen[client]++;
+
+	DataPack pack = new DataPack();
+	pack.WriteCell(GetClientUserId(client));
+	pack.WriteCell(gI_LandfixLoadGen[client]);
+	pack.WriteString(gS_LandfixMap);
+	gH_LandfixDB.Query(SQL_LandfixToggleLoadCallback, query, pack);
+}
+
+public void SQL_LandfixToggleLoadCallback(Database db, DBResultSet results, const char[] error, any data)
+{
+	DataPack pack = view_as<DataPack>(data);
+	pack.Reset();
+	int userid = pack.ReadCell();
+	int generation = pack.ReadCell();
+	char map[PLATFORM_MAX_PATH];
+	pack.ReadString(map, sizeof(map));
+	delete pack;
+
+	int client = GetClientOfUserId(userid);
+
+	// Stale if the client left, a newer load superseded this one, or the map changed since.
+	if(client <= 0 || generation != gI_LandfixLoadGen[client] || !StrEqual(map, gS_LandfixMap))
+		return;
+
+	if(results == null)
+	{
+		LogError("superlandfix toggle load failed: %s", error);
+		return;
+	}
+
+	if(!results.FetchRow())
+		return; // No saved toggles for this map; the defaults already applied.
+
+	bool enabled = results.FetchInt(0) != 0;
+	char jumps[256];
+	results.FetchString(1, jumps, sizeof(jumps));
+
+	ClearLandfixTargets(client);
+	gB_LandfixJumpsEnabled[client] = enabled;
+	AddLandfixTargetsFromString(client, jumps);
+	ResetLandfixJumps(client);
+}
+
+void SaveLandfixToggles(int client)
+{
+	if(client < 1 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+		return;
+
+	if(!gB_LandfixDBReady || gH_LandfixDB == null)
+		return;
+
+	char steamId[MAX_AUTHID_LENGTH];
+	if(!GetLandfixSteamId(client, steamId, sizeof(steamId)))
 		return;
 
 	char list[256];
 	BuildLandfixList(client, list, sizeof(list));
 
-	char value[300];
+	char escapedSteamId[MAX_AUTHID_LENGTH * 2 + 1], escapedMap[PLATFORM_MAX_PATH * 2 + 1], escapedList[512];
+	gH_LandfixDB.Escape(steamId, escapedSteamId, sizeof(escapedSteamId));
+	gH_LandfixDB.Escape(gS_LandfixMap, escapedMap, sizeof(escapedMap));
+	gH_LandfixDB.Escape(list, escapedList, sizeof(escapedList));
 
-	Format(
-		value,
-		sizeof(value),
-		"%d;%s",
-		gB_LandfixJumpsEnabled[client] ? 1 : 0,
-		list
+	char query[900];
+	FormatEx(query, sizeof(query), "REPLACE INTO landfix_toggles (steamid, map, enabled, jumps, updated_at) VALUES ('%s', '%s', %d, '%s', %d)",
+		escapedSteamId, escapedMap, gB_LandfixJumpsEnabled[client] ? 1 : 0, escapedList, GetTime());
+	gH_LandfixDB.Query(SQL_LandfixGenericCallback, query);
+}
+
+// Browsing other players' toggles ---------------------------------------
+
+bool CanBrowseLandfixToggles(int client)
+{
+	if(client < 1 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+		return false;
+
+	if(!gB_LandfixDBReady || gH_LandfixDB == null)
+	{
+		Shavit_PrintToChat(client, "Landfix toggle browsing is still loading.");
+		return false;
+	}
+
+	return true;
+}
+
+void ShowLandfixToggleBrowseMenu(int client)
+{
+	if(!CanBrowseLandfixToggles(client))
+		return;
+
+	char steamId[MAX_AUTHID_LENGTH];
+	if(!GetLandfixSteamId(client, steamId, sizeof(steamId)))
+		return;
+
+	char escapedSteamId[MAX_AUTHID_LENGTH * 2 + 1], escapedMap[PLATFORM_MAX_PATH * 2 + 1];
+	gH_LandfixDB.Escape(steamId, escapedSteamId, sizeof(escapedSteamId));
+	gH_LandfixDB.Escape(gS_LandfixMap, escapedMap, sizeof(escapedMap));
+
+	char query[1024];
+	FormatEx(query, sizeof(query),
+		"SELECT DISTINCT t.steamid, COALESCE(p.last_name, t.steamid) FROM landfix_toggles t LEFT JOIN landfix_players p ON p.steamid = t.steamid WHERE t.map = '%s' AND t.steamid != '%s' ORDER BY 2 ASC LIMIT 128",
+		escapedMap, escapedSteamId);
+
+	DataPack pack = new DataPack();
+	pack.WriteCell(GetClientUserId(client));
+	pack.WriteString(gS_LandfixMap);
+	gH_LandfixDB.Query(SQL_LandfixBrowseMenuCallback, query, pack);
+}
+
+public void SQL_LandfixBrowseMenuCallback(Database db, DBResultSet results, const char[] error, any data)
+{
+	DataPack pack = view_as<DataPack>(data);
+	pack.Reset();
+	int userid = pack.ReadCell();
+	char map[PLATFORM_MAX_PATH];
+	pack.ReadString(map, sizeof(map));
+	delete pack;
+
+	int client = GetClientOfUserId(userid);
+	if(client <= 0 || !StrEqual(map, gS_LandfixMap))
+		return;
+
+	if(results == null)
+	{
+		LogError("superlandfix toggle browse query failed: %s", error);
+		Shavit_PrintToChat(client, "Could not list saved Landfix toggles.");
+		return;
+	}
+
+	Menu menu = new Menu(LandfixBrowseMenuHandler);
+	menu.SetTitle("Landfix | Other Players' Toggles\n \n");
+
+	int count = 0;
+	while(results.FetchRow())
+	{
+		char ownerSteamId[MAX_AUTHID_LENGTH], ownerName[MAX_NAME_LENGTH];
+		results.FetchString(0, ownerSteamId, sizeof(ownerSteamId));
+		results.FetchString(1, ownerName, sizeof(ownerName));
+		menu.AddItem(ownerSteamId, ownerName);
+		count++;
+	}
+
+	if(count == 0)
+		menu.AddItem("", "No saved Landfix toggles on this map", ITEMDRAW_DISABLED);
+
+	menu.ExitBackButton = true;
+	menu.Display(client, MENU_TIME_FOREVER);
+}
+
+public int LandfixBrowseMenuHandler(Menu menu, MenuAction action, int client, int item)
+{
+	if(action == MenuAction_Select)
+	{
+		char steamId[MAX_AUTHID_LENGTH];
+		menu.GetItem(item, steamId, sizeof(steamId));
+		LoadLandfixToggleProfile(client, steamId);
+	}
+	else if(action == MenuAction_Cancel && item == MenuCancel_ExitBack)
+	{
+		ShowToggleMenu(client);
+	}
+	else if(action == MenuAction_End)
+	{
+		delete menu;
+	}
+	return 0;
+}
+
+void LoadLandfixToggleProfile(int client, const char[] steamId)
+{
+	if(!CanBrowseLandfixToggles(client) || steamId[0] == '\0')
+		return;
+
+	char escapedSteamId[MAX_AUTHID_LENGTH * 2 + 1], escapedMap[PLATFORM_MAX_PATH * 2 + 1];
+	gH_LandfixDB.Escape(steamId, escapedSteamId, sizeof(escapedSteamId));
+	gH_LandfixDB.Escape(gS_LandfixMap, escapedMap, sizeof(escapedMap));
+
+	char query[768];
+	FormatEx(query, sizeof(query), "SELECT enabled, jumps FROM landfix_toggles WHERE steamid = '%s' AND map = '%s'", escapedSteamId, escapedMap);
+
+	DataPack pack = new DataPack();
+	pack.WriteCell(GetClientUserId(client));
+	pack.WriteString(gS_LandfixMap);
+	gH_LandfixDB.Query(SQL_LandfixLoadProfileCallback, query, pack);
+}
+
+public void SQL_LandfixLoadProfileCallback(Database db, DBResultSet results, const char[] error, any data)
+{
+	DataPack pack = view_as<DataPack>(data);
+	pack.Reset();
+	int userid = pack.ReadCell();
+	char map[PLATFORM_MAX_PATH];
+	pack.ReadString(map, sizeof(map));
+	delete pack;
+
+	int client = GetClientOfUserId(userid);
+	if(client <= 0 || !StrEqual(map, gS_LandfixMap))
+		return;
+
+	if(results == null)
+	{
+		LogError("superlandfix toggle profile load failed: %s", error);
+		Shavit_PrintToChat(client, "Could not load that player's Landfix toggles.");
+		return;
+	}
+
+	if(!results.FetchRow())
+	{
+		Shavit_PrintToChat(client, "That player has no saved Landfix toggles on this map.");
+		ShowToggleMenu(client);
+		return;
+	}
+
+	bool enabled = results.FetchInt(0) != 0;
+	char jumps[256];
+	results.FetchString(1, jumps, sizeof(jumps));
+
+	ClearLandfixTargets(client);
+	gB_LandfixJumpsEnabled[client] = enabled;
+	AddLandfixTargetsFromString(client, jumps);
+	ResetLandfixJumps(client);
+	SaveLandfixToggles(client);
+
+	char list[256];
+	BuildLandfixList(client, list, sizeof(list));
+
+	Shavit_PrintToChat(
+		client,
+		"Loaded Landfix toggles: %s%s",
+		gS_Warning,
+		list[0] != '\0' ? list : "(none)"
 	);
 
-	gC_LandfixJumpsCookie.Set(client, value);
+	ShowToggleMenu(client);
 }
